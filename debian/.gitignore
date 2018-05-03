@@ -1,0 +1,14 @@
+.debhelper/
+files
+python-pymonetdb.debhelper.log
+python-pymonetdb.postinst.debhelper
+python-pymonetdb.prerm.debhelper
+python-pymonetdb.substvars
+python-pymonetdb/
+python3-pymonetdb.debhelper.log
+python3-pymonetdb.postinst.debhelper
+python3-pymonetdb.prerm.debhelper
+python3-pymonetdb.substvars
+python3-pymonetdb/
+tmp/
+

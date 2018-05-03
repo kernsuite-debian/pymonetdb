@@ -1,0 +1,8 @@
+#!/usr/bin/make -f
+#export DH_VERBOSE = 1
+
+#disable this for now since it requires a running monetdb
+override_dh_auto_test:
+
+%:
+	dh $@ --with python2,python3 --buildsystem=pybuild
