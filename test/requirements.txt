@@ -1,0 +1,6 @@
+coveralls
+pep8
+pytest
+Sphinx
+sphinx_rtd_theme
+mock
