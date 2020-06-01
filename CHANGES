@@ -1,3 +1,39 @@
+# 1.3.1
+
+changes since 1.3.0
+
+ - Profiler changes (#68)
+
+
+# 1.3.0
+
+This is the last release to officially support Python < 3.5.
+
+changes since 1.2.1
+
+ - Change logger.warn to logger.info  (#64)
+ - Add IPv6 support enhancement (#58)
+ - Type analysis for OIDs (#44)
+ - Fix mypy errors (#48)
+ - Check PEP-249 compatibility (#38)
+
+
+# 1.2.1
+
+changes since 1.2.0
+
+ - Get MonetDB profiler events (#35)
+ - low level MAPI interface: Increase the return array size? (#33)
+ - Complete cleanup (#46)
+ - Enable TCP_KEEPALIVE to keep consistent with stream.c (#34)
+
+
+# 1.2.0
+
+changes since 1.1.1
+
+- Correctly monetize python datetime, date, time and timedelta types (#31)
+
 # 1.1.1
 
 changes since 1.1.0
