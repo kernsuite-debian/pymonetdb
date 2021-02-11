@@ -2,29 +2,16 @@ Source: pymonetdb
 Section: python
 Priority: optional
 Maintainer: KERN packaging <packaging@kernsuite.info>
-Build-Depends: debhelper (>=9),
+Build-Depends: debhelper (>=10),
                dh-python,
-               python-all,
-               python-dev,
                python3-dev,
-               python-setuptools,
                python3-setuptools,
                python3-all,
                python3-pytest-runner,
-               python-pytest-runner,
-               python-mock,
                python3-mock
-Standards-Version: 4.4.1
+Standards-Version: 4.5.0
 Homepage: https://github.com/gijzelaerr/pymonetdb
-X-Python-Version: >= 2.6
 X-Python3-Version: >= 3.2
-
-Package: python-pymonetdb
-Architecture: all
-Multi-Arch: foreign
-Depends: ${misc:Depends}, ${python:Depends}
-Description: Native python client API for monetDB
- MonetDB is a column-store database.
 
 Package: python3-pymonetdb
 Architecture: all
@@ -32,3 +19,8 @@ Multi-Arch: foreign
 Depends: ${misc:Depends}, ${python3:Depends}
 Description: Native python3 client API for monetDB
  MonetDB is a column-store database.
+
+Package: pymonetdb
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3-pymonetdb
+Description: MonetDB is a column-store database.
