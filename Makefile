@@ -1,8 +1,13 @@
 # This file is intended for development purposes and should not be used to install pymonetdb
 
-.PHONY: doc clean test
+DBFARM=dbfarm
+DATABASE=demo
 
-all: test
+.PHONY: doc clean test wheel sdist dbfarm-start database-init all build
+
+all: test doc checks build
+
+build: wheel sdist
 
 venv/:
 	python3 -m venv venv
@@ -16,9 +21,6 @@ setup: venv/installed
 
 test: setup
 	venv/bin/pytest
-
-docker-wheels:
-	manylinux2010/outside.sh
 
 clean: venv/
 	venv/bin/python3 setup.py clean
@@ -38,12 +40,6 @@ pycodestyle: venv/bin/pycodestyle
 mypy: venv/bin/mypy
 	venv/bin/mypy pymonetdb tests
 
-venv/bin/delocate-wheel: setup
-	venv/bin/pip install delocate
-
-delocate: venv/bin/delocate-wheel
-	venv/bin/delocate-wheel -v dist/*.whl
-
 venv/bin/twine: setup
 	venv/bin/pip install twine
 
@@ -53,11 +49,11 @@ sdist: setup
 wheel: setup
 	venv/bin/python setup.py build bdist_wheel
 
-twine: venv/bin/twine
+upload: venv/bin/twine wheel sdist
 	venv/bin/twine upload dist/*.whl dist/*.tar.gz
 
 doc: setup
-	PATH=$${PATH}:${CURDIR}/venv/bin $(MAKE) -C doc html
+	 PATH=$${PATH}:${CURDIR}/venv/bin $(MAKE) -C doc html SPHINXOPTS="-W"
 
 venv/bin/flake8: setup
 	venv/bin/pip install flake8
@@ -65,6 +61,31 @@ venv/bin/flake8: setup
 
 flake8: venv/bin/flake8
 	venv/bin/flake8 --count --select=E9,F63,F7,F82 --show-source --statistics pymonetdb tests
-	venv/bin/flake8 --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics pymonetdb tests
+	venv/bin/flake8 --count --max-complexity=10 --max-line-length=127 --statistics pymonetdb tests
+
+venv/bin/pylama: setup
+	venv/bin/pip install "pylama[all]"
+	touch venv/bin/pylama
+
+pylama: venv/bin/pylama
+	venv/bin/pylama pymonetdb tests
 
 checks: mypy pycodestyle flake8
+
+$(DBFARM):
+	monetdbd create $(DBFARM)
+	monetdbd start $(DBFARM)
+	monetdbd set control=yes $(DBFARM)
+	monetdbd set passphrase=testdb $(DBFARM)
+	monetdbd stop $(DBFARM)
+	monetdbd start $(DBFARM)
+
+dbfarm-start:
+	monetdbd start $(DBFARM)
+
+database-init:
+	monetdb stop $(DATABASE) || true
+	monetdb destroy -f $(DATABASE) || true
+	monetdb create $(DATABASE)
+	monetdb release $(DATABASE)
+	monetdb start $(DATABASE)
