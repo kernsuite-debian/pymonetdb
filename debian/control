@@ -2,16 +2,16 @@ Source: pymonetdb
 Section: python
 Priority: optional
 Maintainer: KERN packaging <packaging@kernsuite.info>
-Build-Depends: debhelper (>=10),
+Build-Depends: debhelper (>=11),
                dh-python,
                python3-dev,
                python3-setuptools,
                python3-all,
                python3-pytest-runner,
                python3-mock
-Standards-Version: 4.5.0
+Standards-Version: 4.6.1
 Homepage: https://github.com/gijzelaerr/pymonetdb
-X-Python3-Version: >= 3.2
+X-Python3-Version: >= 3.8
 
 Package: python3-pymonetdb
 Architecture: all
