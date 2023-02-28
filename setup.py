@@ -7,9 +7,9 @@
 # Copyright 1997 - July 2008 CWI, August 2008 - 2016 MonetDB B.V.
 
 import os
-from setuptools import setup
+from setuptools import find_packages, setup
 
-tests_require = ['pytest', 'mypy', 'pycodestyle']
+tests_require = ['pytest', 'mypy', 'pycodestyle', 'types-setuptools']
 
 extras_require = {
     'test': tests_require,
@@ -22,7 +22,7 @@ def read(fname):
     return open(os.path.join(os.path.dirname(__file__), fname)).read()
 
 
-__version__ = '1.4.1'
+__version__ = '1.6.3'
 
 setup(
     name='pymonetdb',
@@ -32,8 +32,8 @@ setup(
     author='MonetDB BV',
     author_email='info@monetdb.org',
     url='http://www.monetdb.org/',
-    packages=['pymonetdb', 'pymonetdb.sql'],
-    download_url='https://github.com/gijzelaerr/pymonetdb',
+    packages=find_packages(),
+    download_url='https://github.com/MonetDB/pymonetdb',
     classifiers=[
         "Topic :: Database",
         "Topic :: Database :: Database Engines/Servers",
@@ -41,13 +41,12 @@ setup(
         "Intended Audience :: Developers",
         "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: Implementation :: PyPy",
     ],
-    install_requires=['future'],
     tests_require=tests_require,
     test_suite="tests",
     extras_require=extras_require,
