@@ -14,7 +14,7 @@ import datetime
 import re
 import uuid
 from decimal import Decimal
-from datetime import timedelta, timezone
+from datetime import timedelta
 
 from pymonetdb.sql import types
 from pymonetdb.exceptions import ProgrammingError
@@ -74,7 +74,13 @@ def py_timetz(data):
 def py_date(data):
     """ Returns a python Date
     """
-    year, month, day = data.split('-', 3)
+    try:
+        year, month, day = data.split('-', 3)
+    except ValueError:
+        if data.startswith('-'):
+            raise ValueError("year out of range, must be positive")
+        else:
+            raise
     return datetime.date(int(year), int(month), int(day))
 
 
@@ -82,7 +88,13 @@ def py_timestamp(data):
     """ Returns a python Timestamp
     """
     date_part, time_part = data.split(' ', 2)
-    year, month, day = date_part.split('-', 3)
+    try:
+        year, month, day = date_part.split('-', 3)
+    except ValueError:
+        if date_part.startswith('-'):
+            raise ValueError("year out of range, must be positive")
+        else:
+            raise
     hour, min, sec_usec = time_part.split(':', 3)
     sec_parts = sec_usec.split('.', 2)
     sec = sec_parts[0]
@@ -104,14 +116,20 @@ def py_sec_interval(data: str) -> timedelta:
     """ Returns a python TimeDelta where data represents a value of MonetDB's INTERVAL SECOND type
     which resembles a stringified decimal.
     """
-    return timedelta(seconds=int(Decimal(data)))
+    # It comes in as a decimal but we use Pythons float parser to parse it.
+    # That's ok because the precision of the decimal is only three decimal digits
+    # so far coarser than the rounding errors introduced by the float.
+    return timedelta(seconds=float(data))
 
 
 def py_day_interval(data: str) -> int:
     """ Returns a python number of days where data represents a value of MonetDB's INTERVAL DAY type
     which resembles a stringified decimal.
     """
-    return timedelta(seconds=int(Decimal(data))).days
+    # It comes in as a decimal but we use Pythons float parser to parse it.
+    # That's ok because the precision of the decimal is only three decimal digits
+    # so far coarser than the rounding errors introduced by the float.
+    return timedelta(seconds=float(data)).days
 
 
 def py_bytes(data: str):
@@ -214,8 +232,11 @@ def TimestampTzFromTicks(ticks):
     return _make_localtime(Timestamp(*time.localtime(ticks)[:6]))
 
 
+_local_tzinfo = datetime.datetime.now().astimezone().tzinfo
+
+
 def _make_localtime(t):
-    return t.replace(tzinfo=timezone(timedelta(hours=1)))
+    return t.replace(tzinfo=_local_tzinfo)
 
 
 Date = datetime.date

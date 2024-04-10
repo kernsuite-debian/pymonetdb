@@ -3,13 +3,16 @@ on:
   push:
     branches: [ master ]
   pull_request:
-    branches: [ master ]
+
+  schedule:
+    - cron:  '5 0 * * *'
+
 jobs:
   osx_wheel:
-    runs-on: macos-10.15
+    runs-on: macos-12
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Install monetdb
         run: brew install monetdb
       - name: Start MonetDB
