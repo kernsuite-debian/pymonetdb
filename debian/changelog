@@ -1,3 +1,11 @@
+pymonetdb (1.7.1-1kern1) jammy; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * New upstream version 1.7.1
+  * Build for jammy
+
+ -- KERN packaging <packaging@kernsuite.info>  Wed, 10 Apr 2024 19:48:37 +0000
+
 pymonetdb (1.6.3-1kern1) focal; urgency=medium
 
   [ Athanaseus Javas Ramaila ]
