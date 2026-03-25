@@ -61,7 +61,7 @@ however, the subsequent batches can be transferred much more efficiently with
 the binary format. By default, pymonetdb will automatically use it when
 possible unless configured otherwise using the `binary` setting, e.g.
 `pymonetdb.connect('demo', binary=0)` or
-`pymonetdb.connect('mapi:monetdb://localhost/demo?binary=0')`.
+`pymonetdb.connect('monetdb://localhost/demo?binary=0')`.
 
 Normally, the binary result set transfer is transparent to the user
 applications. The result set fetching functions automatically do the necessary
@@ -71,7 +71,7 @@ called a fetch function.
 
 We have implemented a special case to benefit from the binary protocol even
 when the `replysize` is set to -1. When pymonetdb knows that binary transfers
-are possible (e.g. learnt when connecting with MoentDB) while `replysize` is
+are possible (e.g. learnt when connecting with MonetDB) while `replysize` is
 -1, it overrides the `replysize`. Pymonetdb will use a small size for the
 initial transfer and then retrieve the rest of the result set in one large
 binary batch.

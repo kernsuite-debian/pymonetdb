@@ -9,12 +9,13 @@
 from abc import abstractmethod
 import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from ipaddress import IPv4Address, IPv6Address
 from random import Random
 from typing import Any, Callable, List, Optional, Tuple
 from unittest import SkipTest, TestCase
 from uuid import UUID
 import pymonetdb
-from tests.util import test_args
+from tests.util import have_monetdb_version_at_least, test_args
 
 QUERY_TEMPLATE = """\
 WITH resultset AS (
@@ -28,6 +29,39 @@ t AS (SELECT 42 AS dummy UNION SELECT 43)
 SELECT * FROM
     resultset RIGHT OUTER JOIN t
     ON resultset.dummy = t.dummy;
+"""
+
+INET_FUNCTIONS = """
+CREATE OR REPLACE FUNCTION pytest_inet4(val INT)
+RETURNS INET4
+BEGIN
+    DECLARE i BIGINT;
+    DECLARE s STRING;
+    SET i = (val + 1) * 1_001_001_001;
+    SET s = '' || (i>>24) % 256 || '.' || (i>>16) % 256 || '.' || (i>>8) % 256 || '.' || i % 256;
+    RETURN CAST(s AS INET4);
+END;
+
+CREATE OR REPLACE FUNCTION pytest_inet6(val INT)
+RETURNS INET6
+BEGIN
+    DECLARE i0, i1, i2, i3 BIGINT;
+    DECLARE s STRING;
+    SET i0 = (val + 1) * 9_137_989_003;
+    SET i1 = (val + 1) * 6_059_578_913;
+    SET i2 = (val + 1) * 3_389_863_883;
+    SET i3 = (val + 1) * 6_456_747_306;
+    SET s =
+        to_hex((i0 >> 16) & 0xFFFF) || ':' ||
+        to_hex( i0         & 0xFFFF) || ':' ||
+        to_hex((i1 >> 16) & 0xFFFF) || ':' ||
+        to_hex( i1         & 0xFFFF) || ':' ||
+        to_hex((i2 >> 16) & 0xFFFF) || ':' ||
+        to_hex( i2         & 0xFFFF) || ':' ||
+        to_hex((i3 >> 16) & 0xFFFF) || ':' ||
+        to_hex( i3         & 0xFFFF);
+    RETURN s; -- CAST(s AS INET6);
+END;
 """
 
 
@@ -64,6 +98,7 @@ TEST_COLUMNS = dict(
     bigint_col=("CAST(value AS bigint)", lambda n: n),
     # hugeint_col=("CAST(value AS hugeint)", lambda n: n),    text_col=("'v' || value", lambda n: f"v{n}"),
     text_col=("'v' || value", lambda n: f"v{n}"),
+    varchar_col=("CAST('v' || value AS VARCHAR(10))", lambda n: f"v{n}"),
     bool_col=("(value % 2 = 0)", lambda n: (n % 2) == 0),
     decimal_col=decimal_column(5, 2),
     real_col=("CAST(value AS REAL) / 2", lambda x: x / 2),
@@ -89,7 +124,7 @@ BLACKLIST = set(['months_col', 'days_col', 'seconds_col'])
 
 class BaseTestCases(TestCase):
     _server_binexport_level: Optional[int] = None
-    _server_has_huge: Optional[bool] = None
+    _server_types: Optional[List[str]] = None
     conn: Optional[pymonetdb.Connection] = None
     cursor: Optional[pymonetdb.sql.cursors.Cursor] = None
     cur: int = 0
@@ -100,55 +135,60 @@ class BaseTestCases(TestCase):
     def probe_server(self):
         if self._server_binexport_level is not None:
             return
-        conn = self.connect_with_args()
-        self._server_binexport_level = conn.mapi.binexport_level
-        cursor = conn.cursor()
-        cursor.execute("SELECT sqlname FROM sys.types WHERE sqlname = 'hugeint'")
-        self._server_has_huge = cursor.rowcount > 0
-        cursor.close()
-        conn.close()
+        with self.connect_with_args() as conn, conn.cursor() as cursor:
+            self._server_binexport_level = conn.mapi.binexport_level
+            cursor.execute("SELECT sqlname FROM sys.types")
+            self._server_types = set(row[0] for row in cursor.fetchall())
 
     def have_binary(self, at_least=1):
         self.probe_server()
         return self._server_binexport_level >= at_least
 
-    def have_huge(self):
+    def server_has_new_time_conversion(self):
+        return have_monetdb_version_at_least(11, 50, 0)
+
+    def have_sqltype(self, sqltype):
         self.probe_server()
-        return self._server_has_huge
+        return sqltype in self._server_types
 
     def skip_unless_have_binary(self):
         if not self.have_binary():
             raise SkipTest("need server with support for binary")
 
-    def skip_unless_have_huge(self):
-        if not self.have_huge():
-            raise SkipTest("need server with support for hugeint")
+    def skip_unless_have_sqltype(self, sqltype):
+        if not self.have_sqltype(sqltype):
+            raise SkipTest(f"need server with support for {sqltype}")
 
     def setUp(self):
         self.cur = 0
         self.rowcount = 0
-        self.close_connection()
+        self.to_close = []
 
     def close_connection(self):
         if self.cursor:
             self.cursor.close()
             self.cursor = None
-        if self.conn:
-            self.conn.close()
-            self.conn = None
 
     def tearDown(self):
         if self.cursor:
             self.cursor.execute("ROLLBACK")
+        for c in self.to_close:
+            try:
+                c.close()
+            except Exception:
+                pass
 
     def connect_with_args(self, **kw_args) -> pymonetdb.Connection:
         try:
             args = dict()
             args.update(test_args)
             args.update(kw_args)
-            conn = pymonetdb.connect(**args)
+            conn = pymonetdb.connect(**args)   # type: ignore
         except AttributeError:
             self.fail("No connect method found in pymonetdb module")
+        self.to_close.append(conn)
+        with conn.cursor() as c:
+            c.execute("SELECT %s", f"This connection is for test {self.id()!r}")
         return conn
 
     @abstractmethod
@@ -164,7 +204,7 @@ class BaseTestCases(TestCase):
             self.conn, self.expect_binary_after = self.setup_connection()
             self.cursor = self.conn.cursor()
 
-    def do_query(self, n, cols=('int_col',)):
+    def construct_query(self, n, cols):
         if isinstance(cols, dict):
             test_columns = cols
         else:
@@ -184,14 +224,22 @@ class BaseTestCases(TestCase):
             count=n
         )
 
-        self.do_connect()
-        self.cursor.execute(query)
+        return query, colnames, verifiers
 
-        self.assertEqual(n, self.cursor.rowcount)
-
-        self.rowcount = n
+    def set_expected_results(self, rowcount, colnames, verifiers):
+        self.cur = 0
+        self.rowcount = rowcount
         self.colnames = colnames
         self.verifiers = verifiers
+
+    def do_query(self, n, cols=('int_col',)):
+        query, colnames, verifiers = self.construct_query(n, cols)
+
+        self.do_connect()
+        self.cursor.execute(query)
+        self.set_expected_results(n, colnames, verifiers)
+
+        self.assertEqual(n, self.cursor.rowcount)
 
     def verifyRow(self, n, row):
         # two dummy columns because of the outer join
@@ -243,7 +291,9 @@ class BaseTestCases(TestCase):
         self.cur += len(rows)
         self.verifyBinary()
 
-    def do_fetchall(self):
+    def do_fetchall(self) -> int:
+        oldcur = self.cur
+        assert self.cursor
         rows = self.cursor.fetchall()
         expectedRows = self.rowcount - self.cur
         self.assertEqual(expectedRows, len(rows))
@@ -252,6 +302,7 @@ class BaseTestCases(TestCase):
         self.cur += len(rows)
         self.verifyBinary()
         self.assertAtEnd()
+        return self.cur - oldcur
 
     def do_scroll(self, n, mode):
         self.cursor.scroll(n, mode)
@@ -323,8 +374,36 @@ class BaseTestCases(TestCase):
                 self.do_scroll(x - self.cur, 'relative')
             self.do_fetchmany(y - x)
 
+    def test_multiple(self):
+        self.do_connect()
+
+        nrows = 20
+        query1, colnames1, verifiers1 = self.construct_query(nrows, ['int_col'])
+        query2, colnames2, verifiers2 = self.construct_query(2 * nrows, ['tinyint_col', 'text_col'])
+
+        def access_pattern(self, n):
+            self.do_fetchone()
+            self.do_fetchmany(n // 2)
+            self.do_scroll(n // 4, 'absolute')
+            remaining = self.do_fetchall()
+            self.assertEqual(remaining, n // 4 * 3)
+            self.verifyBinary()
+            self.assertAtEnd()
+
+        query = f"{query1};\n{query2}"
+        self.cursor.execute(query)
+
+        self.set_expected_results(nrows, colnames1, verifiers1)
+        access_pattern(self, nrows)
+
+        self.assertTrue(self.cursor.nextset())
+        self.set_expected_results(2 * nrows, colnames2, verifiers2)
+        access_pattern(self, 2 * nrows)
+
+        self.assertFalse(self.cursor.nextset())
+
     def test_huge(self):
-        self.skip_unless_have_huge()
+        self.skip_unless_have_sqltype('hugeint')
         max_value = (1 << 127) - 1
         min_value = - max_value
         columns = dict(
@@ -348,9 +427,42 @@ class BaseTestCases(TestCase):
         self.do_fetchall()
         self.verifyBinary()
 
+    def test_inet4(self):
+        self.skip_unless_have_sqltype('inet4')
+        cols = dict(
+            inet4_col=(
+                'pytest_inet4(value)',
+                lambda n: IPv4Address(((n + 1) * 1_001_001_001) & 0xFF_FF_FF_FF)
+            ))
+        self.do_connect()
+        self.cursor.execute(INET_FUNCTIONS)
+        self.do_query(250, cols)
+        self.do_fetchall()
+        self.verifyBinary()
+
+    def test_inet6(self):
+        self.skip_unless_have_sqltype('inet6')
+
+        def ref_inet6(val):
+            i0 = ((val + 1) * 9_137_989_003) & 0xff_ff_ff_ff
+            i1 = ((val + 1) * 6_059_578_913) & 0xff_ff_ff_ff
+            i2 = ((val + 1) * 3_389_863_883) & 0xff_ff_ff_ff
+            i3 = ((val + 1) * 6_456_747_306) & 0xff_ff_ff_ff
+            i = (i0 << 96) + (i1 << 64) + (i2 << 32) + i3
+            return IPv6Address(i)
+
+        cols = dict(
+            inet6_col=('pytest_inet6(value)', ref_inet6)
+        )
+        self.do_connect()
+        self.cursor.execute(INET_FUNCTIONS)
+        self.do_query(250, cols)
+        self.do_fetchall()
+        self.verifyBinary()
+
     def test_decimal_types(self):
         cases = set()
-        widest = 39 if self.have_huge() else 18
+        widest = 39 if self.have_sqltype('hugeint') else 18
         for p in range(1, widest):
             cases.add((p, 0))
             cases.add((p, min(3, p - 1)))
@@ -366,7 +478,7 @@ class BaseTestCases(TestCase):
         self.do_fetchall()
         self.verifyBinary()
 
-    def test_time_temporal(self):
+    def prepare_temporal_tests(self, col):
         self.do_connect()
         minutes_east = 60 + 30  # easily recognizable
         self.conn.set_timezone(60 * minutes_east)
@@ -377,11 +489,11 @@ class BaseTestCases(TestCase):
         self.cursor.execute("DROP TABLE IF EXISTS foo")
         cols = [
             "name TEXT",
-            "tsz TIMESTAMPTZ",
-            "tsn TIMESTAMP",
+            "ts_with TIMESTAMPTZ",
+            "ts_without TIMESTAMP",
             "d DATE",
-            "tz TIMETZ",
-            "tn TIME",
+            "t_with TIMETZ",
+            "t_without TIME",
         ]
         create_statement = f"CREATE TABLE foo ({(', '.join(cols))})"
         self.cursor.execute(create_statement)
@@ -394,136 +506,205 @@ class BaseTestCases(TestCase):
             ('apollo13_pacific', "TIMESTAMPTZ '1970-04-17 10:07:41-08:00'"),
         ]
         insert_statement = (
-            "INSERT INTO foo(name, tsz) VALUES "
+            "INSERT INTO foo(name, ts_with) VALUES "
             + ", ".join(f"('{name}', {expr})" for name, expr in interesting_times)
         )
         self.cursor.execute(insert_statement)
-        self.cursor.execute("UPDATE foo set tsn = tsz, d = tsz, tz = tsz, tn = tsz")
+        self.cursor.execute("UPDATE foo set ts_without = ts_with, d = ts_with, t_with = ts_with, t_without = ts_with")
 
-        tsz = dict()
-        tsn = dict()
-        d = dict()
-        tz = dict()
-        tn = dict()
-        self.cursor.execute("SELECT name, tsz, tsn, d, tz, tn FROM foo")
+        self.cursor.execute(f"SELECT name, {col} FROM foo")
         rows = self.cursor.fetchall()
 
+        # needed by verifyBinary
         # update cur manually because it is set by do_fetchall but not
         # by cursor.fetchall
         self.cur = self.cursor.rowcount
 
+        values = dict()
         for row in rows:
             name = row[0]
             # make REALLY REALLY sure the indices match the order in the SELECT clause!
-            tsz[name] = row[1]
-            tsn[name] = row[2]
-            d[name] = row[3]
-            tz[name] = row[4]
-            tn[name] = row[5]
-
-        self.assertIsNone(tsn['null'])
-        self.assertIsNone(tsz['null'])
-
-        # TSZ:
-
-        # apollo13_utc was given as 18:07+00:00,
-        # stored as 18:07 UTC,
-        # rendered on the wire as 19:37+01:30
-        # converted to a DateTime of 19:37 in the +01:30 time zone
-        x = tsz['apollo13_utc']
-        self.assertEqual('1970-04-17T19:37:41+01:30', x.isoformat())
-        self.assertEqual(our_timezone, x.tzinfo)
-
-        # apollo13_pacific was given as 10:07:41-08:00,
-        # stored as 18:07 UTC,
-        # rendered on the wire as 19:37+01:30
-        # converted to a DateTime of 19:37 in the +01:30 time zone
-        x = tsz['apollo13_pacific']
-        self.assertEqual('1970-04-17T19:37:41+01:30', x.isoformat())
-        self.assertEqual(our_timezone, x.tzinfo)
-
-        # TSN:
-
-        # apollo13_utc was originally given as 18:07+00:00,
-        # stored in tsz as 18:07 UTC,
-        # then stored in tsn as 18:07,
-        # rendered on the wire as 18:07
-        # converted to a DateTime of 18:07 without timezone
-        x = tsn['apollo13_utc']
-        self.assertEqual('1970-04-17T18:07:41', x.isoformat())
-        self.assertIsNone(x.tzinfo)
-
-        # apollo13_utc was originally given as 10:07:41-08:00,
-        # stored in tsz as 18:07 UTC,
-        # then stored in tsn as 18:07,
-        # rendered on the wire as 18:07
-        # converted to a DateTime of 18:07 without timezone
-        x = tsn['apollo13_pacific']
-        self.assertEqual('1970-04-17T18:07:41', x.isoformat())
-        self.assertIsNone(x.tzinfo)
-
-        # D
-
-        # apollo13_utc was originally given as 1970-04-17 18:07+00:00,
-        # then stored in d as as 1970-04-17,
-        # rendered on the wire as 1970-04-17
-        # converted to a DateTime of 18:07 without timezone
-        x = d['apollo13_utc']
-        self.assertEqual('1970-04-17', x.isoformat())
-
-        # apollo13_utc was originally given as 1970-04-17 10:07:41-08:00,
-        # then stored in d as as 1970-04-17,
-        # rendered on the wire as 1970-04-17
-        # converted to a DateTime of 18:07 without timezone
-        x = d['apollo13_pacific']
-        self.assertEqual('1970-04-17', x.isoformat())
-
-        # TZ:
-
-        # apollo13_utc was given as 18:07+00:00,
-        # stored as 18:07 UTC,
-        # rendered on the wire as 19:37+01:30
-        # converted to a Time of 19:37 in the +01:30 time zone
-        x = tz['apollo13_utc']
-        self.assertEqual('19:37:41+01:30', x.isoformat())
-        self.assertEqual(our_timezone, x.tzinfo)
-
-        # apollo13_pacific was given as 10:07:41-08:00,
-        # stored as 18:07 UTC,
-        # rendered on the wire as 19:37+01:30
-        # converted to a Time of 19:37 in the +01:30 time zone
-        x = tz['apollo13_pacific']
-        self.assertEqual('19:37:41+01:30', x.isoformat())
-        self.assertEqual(our_timezone, x.tzinfo)
-
-        # TN:
-
-        # apollo13_utc was originally given as 18:07+00:00,
-        # stored in tsz as 18:07 UTC,
-        # then stored in tn as 18:07,
-        # rendered on the wire as 18:07
-        # converted to a Time of 18:07 without timezone
-        x = tn['apollo13_utc']
-        self.assertEqual('18:07:41', x.isoformat())
-        self.assertIsNone(x.tzinfo)
-
-        # apollo13_utc was originally given as 10:07:41-08:00,
-        # stored in tsz as 18:07 UTC,
-        # then stored in tsn as 18:07,
-        # rendered on the wire as 18:07
-        # converted to a Time of 18:07 without timezone
-        x = tn['apollo13_pacific']
-        self.assertEqual('18:07:41', x.isoformat())
-        self.assertIsNone(x.tzinfo)
+            values[name] = row[1]
 
         self.verifyBinary()
+        return (our_timezone, values)
+
+    def test_temporal_timestamp_with_timezone(self):
+        (tz, values) = self.prepare_temporal_tests('ts_with')
+        self.assertIsNone(values['null'])
+
+        # apollo13_utc was given as 1970-04-17 18:07:41+00:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # rendered on the wire as 1970-04-17 19:37+01:30,
+        # converted to a DateTime of 19:37 in the +01:30 time zone
+        x = values['apollo13_utc']
+        self.assertEqual('1970-04-17T19:37:41+01:30', x.isoformat())
+        self.assertEqual(tz, x.tzinfo)
+
+        # apollo13_pacific was given as 1970-04-17 10:07:41-08:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC
+        # rendered on the wire as 1970-04-17 19:37+01:30
+        # converted to a DateTime of 19:37 in the +01:30 time zone
+        x = values['apollo13_pacific']
+        self.assertEqual('1970-04-17T19:37:41+01:30', x.isoformat())
+        self.assertEqual(tz, x.tzinfo)
+
+    def test_temporal_timestamp_without_timezone_old(self):
+        # the difference between _old and _new is marked with an arrow <---
+        if self.server_has_new_time_conversion():
+            raise SkipTest("test only applies to old MonetDB versions")
+
+        (tz, values) = self.prepare_temporal_tests('ts_without')
+        self.assertIsNone(values['null'])
+
+        # apollo13_utc was given as 1970-04-17 18:07:41+00:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in ts_without as 1970-04-17 18:07:41,   <---
+        # rendered on the wire as 1970-04-17 18:07:41,
+        # converted to a DateTime of 18:07 without timezone
+        x = values['apollo13_utc']
+        self.assertEqual('1970-04-17T18:07:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
+
+        # apollo13_pacific was given as 1970-04-17 10:07:41-08:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in ts_without as 1970-04-17 18:07:41,   <---
+        # rendered on the wire as 1970-04-17 18:07:41,
+        # converted to a DateTime of 18:07 without timezone
+        x = values['apollo13_pacific']
+        self.assertEqual('1970-04-17T18:07:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
+
+    def test_temporal_timestamp_without_timezone_new(self):
+        # the difference between _old and _new is marked with an arrow <---
+        if not self.server_has_new_time_conversion():
+            raise SkipTest("test only applies to new MonetDB versions")
+
+        (tz, values) = self.prepare_temporal_tests('ts_without')
+        self.assertIsNone(values['null'])
+
+        # apollo13_utc was given as 1970-04-17 18:07:41+00:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in ts_without as 1970-04-17 19:37:41,   <---
+        # rendered on the wire as 1970-04-17 19:37:41,
+        # converted to a DateTime of 19:37 without timezone
+        x = values['apollo13_utc']
+        self.assertEqual('1970-04-17T19:37:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
+
+        # apollo13_pacific was given as 1970-04-17 10:07:41-08:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in ts_without as 1970-04-17 19:37:41,   <---
+        # rendered on the wire as 1970-04-17 19:37:41,
+        # converted to a DateTime of 19:37 without timezone
+        x = values['apollo13_pacific']
+        self.assertEqual('1970-04-17T19:37:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
+
+    def test_temporal_date(self):
+        (tz, values) = self.prepare_temporal_tests('d')
+        self.assertIsNone(values['null'])
+
+        # apollo13_utc was given as 1970-04-17 18:07:41+00:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in d as 1970-04-17,
+        # rendered on the wire as 1970-04-17,
+        # converted to a Date of 1970-04-17
+        x = values['apollo13_utc']
+        self.assertEqual('1970-04-17', x.isoformat())
+
+        # apollo13_pacific was given as 1970-04-17 10:07:41-08:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in d as 1970-04-17,
+        # rendered on the wire as 1970-04-17,
+        # converted to a Date of 1970-04-17
+        x = values['apollo13_pacific']
+        self.assertEqual('1970-04-17', x.isoformat())
+
+    def test_temporal_time_with_timezone(self):
+        (tz, values) = self.prepare_temporal_tests('t_with')
+        self.assertIsNone(values['null'])
+
+        # apollo13_utc was given as 1970-04-17 18:07:41+00:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in t_with as 18:07:41 UTC,
+        # rendered on the wire as 19:37+01:30,
+        # converted to a DateTime of 19:37 in the +01:30 time zone
+        x = values['apollo13_utc']
+        self.assertEqual('19:37:41+01:30', x.isoformat())
+        self.assertEqual(tz, x.tzinfo)
+
+        # apollo13_pacific was given as 1970-04-17 10:07:41-08:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC
+        # then stored in t_with as 18:07:41 UTC,
+        # rendered on the wire as 19:37+01:30,
+        # converted to a DateTime of 19:37 in the +01:30 time zone
+        x = values['apollo13_pacific']
+        self.assertEqual('19:37:41+01:30', x.isoformat())
+        self.assertEqual(tz, x.tzinfo)
+
+    def test_temporal_time_without_timezone_old(self):
+        # the difference between _old and _new is marked with an arrow <---
+        if self.server_has_new_time_conversion():
+            raise SkipTest("test only applies to old MonetDB versions")
+
+        (tz, values) = self.prepare_temporal_tests('t_without')
+        self.assertIsNone(values['null'])
+
+        # apollo13_utc was given as 1970-04-17 18:07:41+00:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in t_without as 18:07:41,          <---
+        # rendered on the wire as 18:07:41,
+        # converted to a DateTime of 18:07 without timezone
+        x = values['apollo13_utc']
+        self.assertEqual('18:07:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
+
+        # apollo13_pacific was given as 1970-04-17 10:07:41-08:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in t_without as 18:07:41,          <---
+        # rendered on the wire as 18:07:41,
+        # converted to a DateTime of 18:07 without timezone
+        x = values['apollo13_pacific']
+        self.assertEqual('18:07:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
+
+    def test_temporal_time_without_timezone_new(self):
+        # the difference between _old and _new is marked with an arrow <---
+        if not self.server_has_new_time_conversion():
+            raise SkipTest("test only applies to new MonetDB versions")
+
+        (tz, values) = self.prepare_temporal_tests('t_without')
+        self.assertIsNone(values['null'])
+
+        # apollo13_utc was given as 1970-04-17 18:07:41+00:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in t_without as 19:37:41,          <---
+        # rendered on the wire as 19:37:41,
+        # converted to a DateTime of 19:37 without timezone
+        x = values['apollo13_utc']
+        self.assertEqual('19:37:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
+
+        # apollo13_pacific was given as 1970-04-17 10:07:41-08:00,
+        # stored in ts_with as 1970-04-17 18:07:41 UTC,
+        # then stored in t_without as 19:37:41,          <---
+        # rendered on the wire as 19:37:41,
+        # converted to a DateTime of 19:37 without timezone
+        x = values['apollo13_pacific']
+        self.assertEqual('19:37:41', x.isoformat())
+        self.assertIsNone(x.tzinfo)
 
     def test_interval_second(self):
-        self.do_query(250, ['seconds_col'])
+        if not self.server_has_new_time_conversion():
+            raise SkipTest("test only applies to newer MonetDB versions")
+        self.do_query(3, ['seconds_col'])
         self.do_fetchall()
         self.verifyBinary()
 
     def test_interval_day(self):
+        if not self.server_has_new_time_conversion():
+            raise SkipTest("test only applies to newer MonetDB versions")
         self.do_query(250, ['days_col'])
         self.do_fetchall()
         self.verifyBinary()
@@ -532,6 +713,27 @@ class BaseTestCases(TestCase):
         self.do_query(250, ['months_col'])
         self.do_fetchall()
         self.verifyBinary()
+
+    def do_test_wide(self, ncols):
+        i = 0
+        cols = []
+        while len(cols) < ncols:
+            cols += [
+                (f'int{i}', TEST_COLUMNS['int_col']),
+                (f'text{i}', TEST_COLUMNS['varchar_col']),
+                (f'dbl{i}', TEST_COLUMNS['double_col']),
+            ]
+            i += 1
+        coldict = dict(cols[:ncols])
+        self.do_query(10, coldict)
+        self.do_fetchall()
+        self.verifyBinary()
+
+    def test_wide300(self):
+        self.do_test_wide(300)
+
+    def test_wide3000(self):
+        self.do_test_wide(3000)
 
 
 class TestResultSet(BaseTestCases):

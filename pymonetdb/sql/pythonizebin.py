@@ -12,6 +12,7 @@ from abc import abstractmethod
 import array
 from datetime import date, datetime, time, timezone, timedelta
 from decimal import Decimal
+from ipaddress import IPv4Address, IPv6Address
 import json
 from math import isnan
 import struct
@@ -145,13 +146,34 @@ class UuidDecoder(BinaryDecoder):
         return result
 
 
+class Inet4Decoder(BinaryDecoder):
+    def decode(self, server_endian: str, data: memoryview) -> List[Any]:
+        arr = array.array('I')
+        arr.frombytes(data)
+        if server_endian != 'big':
+            arr.byteswap()
+        values = [None if v == 0 else IPv4Address(v) for v in arr]
+        return values
+
+
+class Inet6Decoder(BinaryDecoder):
+    def decode(self, server_endian: str, data: memoryview) -> List[Any]:
+        result: List[Optional[IPv6Address]] = []
+        nil_repr = b'\x00' * 16
+        for i in range(0, len(data), 16):
+            slice = data[i:i + 16]
+            if slice != nil_repr:
+                result.append((IPv6Address(bytes(slice))))
+            else:
+                result.append(None)
+        return result
+
+
 def _decode_utf8(x: bytes) -> str:
     return str(x, 'utf-8')
 
 
 class ZeroDelimitedDecoder(BinaryDecoder):
-    converter: Callable[[bytes], Any]
-
     def __init__(self, converter: Callable[[bytes], Any]):
         self.converter = converter
 
@@ -355,6 +377,9 @@ mapping = {
     types.MONTH_INTERVAL: lambda cursor, colno: IntegerDecoder(32),
     types.SEC_INTERVAL: lambda cursor, colno: IntegerDecoder(64, mapper=lambda x: timedelta(milliseconds=x)),
     types.DAY_INTERVAL: lambda cursor, colno: IntegerDecoder(64, mapper=lambda x: timedelta(milliseconds=x).days),
+
+    types.INET4: lambda cursor, colno: Inet4Decoder(),
+    types.INET6: lambda cursor, colno: Inet6Decoder(),
 
     # Not supported in COPY BINARY or the binary protocol
     # types.GEOMETRY: strip,

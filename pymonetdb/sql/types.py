@@ -13,6 +13,7 @@ CHAR = 'char'                      # (L) character string with length L
 VARCHAR = 'varchar'                # (L) string with atmost length L
 CLOB = 'clob'                      # string with no limit on size
 BLOB = 'blob'                      # binary data
+STR = 'str'                        # character string with unspecified length
 
 TINYINT = 'tinyint'                # 8 bit integer
 SMALLINT = 'smallint'              # 16 bit integer
@@ -33,7 +34,9 @@ SEC_INTERVAL = 'sec_interval'      # number of seconds
 DAY_INTERVAL = 'day_interval'      # number of seconds
 
 URL = 'url'                        # url
-INET = 'inet'                      # ipv4 address
+INET = 'inet'                      # ipv4 address with netmask
+INET4 = 'inet4'                    # ipv4 address
+INET6 = 'inet6'                    # ipv6 address
 UUID = 'uuid'                      # uuid
 JSON = 'json'                      # JSON string
 GEOMETRY = 'geometry'              # geometry string

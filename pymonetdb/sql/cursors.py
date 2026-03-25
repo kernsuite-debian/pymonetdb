@@ -7,7 +7,7 @@
 import logging
 from collections import namedtuple
 import struct
-from typing import List, Optional, Dict, Tuple
+from typing import Any, List, Optional, Dict, Sequence, Tuple, Type, Union
 from pymonetdb.policy import BatchPolicy
 import pymonetdb.sql.connections
 from pymonetdb.sql.debug import debug, export
@@ -36,7 +36,7 @@ class Cursor(object):
     """Default value for the size parameter of :func:`~pymonetdb.sql.cursors.Cursor.fetchmany`. """
 
     rowcount: int
-    description: Optional[Description]
+    description: Optional[List[Description]]
     _can_bindecode: Optional[bool]
     _bindecoders: Optional[List['pythonizebin.BinaryDecoder']]
     rownumber: int
@@ -44,9 +44,12 @@ class Cursor(object):
     _offset: int
     _rows: List[Tuple]
     _resultsets_to_close: List[str]
-    _query_id: int
-    messages: List[str]
+    _query_id: Optional[str]
+    messages: List[Tuple[Type[Exception], str]]
     lastrowid: Optional[int]
+    _unpack_int64: str
+
+    _next_result_sets: List[Tuple[str, int, List[Description], List[Tuple]]]
 
     def __init__(self, connection: 'pymonetdb.sql.connections.Connection'):
         """This read-only attribute return a reference to the Connection
@@ -114,7 +117,7 @@ class Cursor(object):
 
         # used to identify a query during server contact.
         # Only select queries have query ID
-        self._query_id = -1
+        self._query_id = None
 
         # This is a Python list object to which the interface appends
         # tuples (exception class, exception value) for all messages
@@ -141,6 +144,8 @@ class Cursor(object):
         # executed statement modified more than one row, e.g. when
         # using INSERT with .executemany().
         self.lastrowid = None
+
+        self._next_result_sets = []
 
         # This is used to unpack binary result sets
         server_endian = self.connection.mapi.server_endian
@@ -187,7 +192,7 @@ class Cursor(object):
         # Propagate any errors
         return False
 
-    def execute(self, operation: str, parameters: Optional[Dict] = None):  # noqa C901
+    def execute(self, operation: str, parameters: Optional[Union[Dict, Sequence[Any]]] = None):  # noqa C901
         """Prepare and execute a database operation (query or
         command).  Parameters may be provided as mapping and
         will be bound to variables in the operation.
@@ -200,8 +205,6 @@ class Cursor(object):
         self.messages = []
 
         self._close_earlier_resultsets()
-        self._can_bindecode = None
-        self._bindecoders = None
 
         # set the number of rows to fetch
         desired_replysize = self._policy.new_query()
@@ -240,8 +243,8 @@ class Cursor(object):
             query = operation
 
         block = self.connection.execute(query)
-        self._store_result(block)
-        self.rownumber = 0
+        self._store_result(block, update_existing=False)
+        self.nextset()
         self._executed = operation
         return self.rowcount if self.rowcount >= 0 else None
 
@@ -274,7 +277,7 @@ class Cursor(object):
         single sequence, or None when no more data is available."""
 
         self._check_executed()
-        if self._query_id == -1:
+        if self._query_id is None:
             msg = "query didn't result in a resultset"
             self._exception_handler(ProgrammingError, msg)
 
@@ -302,7 +305,7 @@ class Cursor(object):
         call was issued yet."""
 
         self._check_executed()
-        if self._query_id == -1:
+        if self._query_id is None:
             msg = "query didn't result in a resultset"
             self._exception_handler(ProgrammingError, msg)
 
@@ -334,6 +337,21 @@ class Cursor(object):
 
         return self.fetchmany(self.rowcount)
 
+    def nextset(self) -> Optional[bool]:
+        if not self._next_result_sets:
+            return None
+
+        (self._query_id, self.rowcount, self.description, self._rows) = self._next_result_sets[0]
+        del self._next_result_sets[0]
+
+        self._policy.new_query()
+        self._offset = 0
+        self.rownumber = 0
+        self._can_bindecode = None
+        self._bindecoders = None
+
+        return True
+
     def _populate_cache(self, already_used, requested_end):
         del self._rows[:]
         self._offset = self.rownumber
@@ -352,7 +370,7 @@ class Cursor(object):
         else:
             command = 'Xexport %s %s %s' % (self._query_id, self.rownumber, rows_to_fetch)
             block = self.connection.command(command)
-            self._store_result(block)
+            self._store_result(block, update_existing=True)
 
     def _check_bindecode_possible(self):
         self._can_bindecode = False
@@ -395,17 +413,23 @@ class Cursor(object):
     def __next__(self):
         return self.next()
 
-    def _store_result(self, block):  # noqa: C901
+    def _store_result(self, block, *, update_existing: bool):  # noqa: C901
         """ parses the mapi result into a resultset"""
+
+        if not update_existing:
+            self._next_result_sets = []
 
         if not block:
             block = ""
 
         columns = 0
-        column_name = ""
-        scale = display_size = internal_size = precision = 0
-        null_ok = False
-        type_ = []
+        column_name: List[Optional[str]] = []
+        scale: List[Optional[int]] = []
+        display_size: List[Optional[int]] = []
+        internal_size: List[Optional[int]] = []
+        precision: List[Optional[int]] = []
+        null_ok: List[Optional[bool]] = []
+        type_: List[Optional[str]] = []
 
         msg_tuple = mapi.MSG_TUPLE
         assert len(msg_tuple) == 1
@@ -443,7 +467,8 @@ class Cursor(object):
                     logger.warning(msg)
                     self.messages.append((Warning, msg))
 
-                description = []
+                description = self.description if self.description is not None else []
+                description[:] = []
                 for i in range(columns):
                     description.append(Description(column_name[i], type_[i], display_size[i], internal_size[i],
                                                    precision[i], scale[i], null_ok[i]))
@@ -455,14 +480,21 @@ class Cursor(object):
                 self.messages.append((Warning, line[1:]))
 
             elif line.startswith(mapi.MSG_QTABLE) or line.startswith(mapi.MSG_QPREPARE):
-                self._query_id, rowcount, columns, tuples = line[2:].split()[:4]
+                query_id, rowcount, columns, tuples = line[2:].split()[:4]
+                self._query_id = query_id
 
                 columns = int(columns)  # number of columns in result
-                self.rowcount = int(rowcount)  # total number of rows
                 tuples = int(tuples)     # number of rows in this set
-                if tuples < self.rowcount:
-                    self._resultsets_to_close.append(self._query_id)
+
+                self.description = []
+                self.rowcount = int(rowcount)  # total number of rows
                 self._rows = []
+
+                if tuples < self.rowcount:
+                    self._resultsets_to_close.append(query_id)
+
+                if not update_existing:
+                    self._next_result_sets.append((query_id, self.rowcount, self.description, self._rows))
 
                 # set up fields for description
                 # table_name = [None] * columns
@@ -477,7 +509,7 @@ class Cursor(object):
 
                 self._offset = 0
                 if line.startswith(mapi.MSG_QPREPARE):
-                    self.lastrowid = int(self._query_id)
+                    self.lastrowid = int(query_id)
                 else:
                     self.lastrowid = None
 
@@ -501,7 +533,7 @@ class Cursor(object):
                 self.description = None
                 self.rowcount = int(affected)
                 self.lastrowid = int(identity)
-                self._query_id = -1
+                self._query_id = None
 
             elif line.startswith(mapi.MSG_QTRANS):
                 self._offset = 0

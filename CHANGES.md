@@ -1,3 +1,142 @@
+# unreleased
+
+New features since 1.9.0
+
+Bug fixes
+
+
+# 1.9.0
+
+New features since 1.8.5
+
+* Added support for the inet4 and inet6 types added in the upcoming
+  MonetDB Dec2025 release.
+
+* Added support for Python 3.14.
+
+* All INFO level log messages have been downgraded to DEBUG
+  except for info messages sent by the server.
+
+* Include py.typed to silence mypy warnings in Python code that depend
+  on pymonetdb.
+
+Version number policy
+
+* From now on pymonetdb version numbers will follow [Semantic
+  Versioning](https://semver.org/). This means the third part of the version
+  number is reserved for bug fixes, the middle part for backward compatible
+  changes and the first for backward incompatible changes.
+
+
+# 1.8.5
+
+New features since 1.8.4
+
+* The 'connect_timeout' parameter now applies to the whole process of
+  finding a server and logging in, instead of just setting the socket
+  timeout during socket.connect().
+
+  This is useful because sometimes socket.connect() may succeed even
+  though the server is in fact hanging.
+
+* All logging messages are now at DEBUG level. There used to be one INFO
+  message "Established connection to..." but it was emitted too early,
+  before login. Logging everything as DEBUG seems more consistent.
+
+Bug fixes
+
+* The decision whether a result set needs to be closed or not was
+  accidentally based on the size of the previous result set, not the
+  current. This could cause unclosed result sets to pile up until the
+  connection was closed.
+
+* When scanning Unix Domain sockets, errors are to be expected. Until
+  now, all exceptions were intercepted and if no connection could be
+  made, the last one was rethrown. This caused important errors such as
+  'invalid credentials' to be masked by later less interesting errors.
+  This has been fixed by only postponing OSErrors and 'no such database'.
+
+
+# 1.8.4
+
+Bug fixes
+
+* Fix MAPI protocol corruption bug caused by socket.send() being used in some
+  places rather than socket.sendall().
+
+* When disconnecting, check that the socket hasn't already been closed
+  and dropped, for example by _sabotage().
+
+
+# 1.8.3
+
+Bug fixes only.
+
+* Avoid double close of filetransfer `Upload` object.
+  This was always an error but with Python 3.13 it started to cause warnings.
+
+* Fix error message when 'core' attributes like 'host' and 'port' are used
+  as URL query parameters
+
+
+# 1.8.2
+
+New features since 1.8.1
+
+* CLIENTINFO: At connect time, tell the server more about the connecting client:
+  hostname, application name, pymonetdb version, process id and an optional
+  remark. This information will show up in the `sys.sessions` table.
+  Configurable with the new settings `client_info`, `client_application` and
+  `client_remark`.
+
+Bug fixes
+
+* Use the right directory when scanning for Unix Domain sockets.
+
+* Minor fixes to make the test suite pass with MonetDB Jun2020:
+
+  * Always announce FILETRANS capability, allowing it to work with older MonetDB
+    versions.
+
+  * Support result set format of PREPARE statements on older MonetDB versions.
+
+* Restore connect_timeout=-1 to how it was before 1.8.0. However, avoid setting
+  the socket to non-blocking mode. 
+  See [Issue #127](https://github.com/MonetDB/pymonetdb/issues/127).
+
+
+# 1.8.1
+
+changes since 1.8.0
+
+* Restore behavior where 'sockdir' can be changed by setting 'host'
+  to something that starts with a slash. Mtest.py relies on this.
+
+
+# 1.8.0
+
+changes since 1.7.2
+
+* Incompatible change: If multiple queries are executed at once, the first
+  result set is returned rather than the last.
+  For example, `Cursor.execute("SELECT 1; SELECT 2")` used to return 2
+  but now returns 1.
+
+* Add support for [Cursor.nextset][nextset]
+  to allow retrieving result sets other than the first.
+
+* Add support for encrypted connections using TLS. This can be enabled using the
+  `tls` parameter of `pymonetdb.connect()` or by using a `monetdbs://` URL.
+
+* Add support for `monetdb://` and `monetdbs://` URLs. See [MonetDB URLs] for
+  details. The `mapi:monetdb://` URLs are now deprecated.
+
+* Support for Python 3.6 has been dropped
+
+[nextset]: https://peps.python.org/pep-0249/#nextset
+[MonetDB URLs]: https://www.monetdb.org/documentation/user-guide/client-interfaces/monetdb-urls/
+
+
 # 1.7.1
 
 changes since 1.7.0
