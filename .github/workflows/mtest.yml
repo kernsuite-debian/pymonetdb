@@ -1,0 +1,59 @@
+name: Try the MonetDB test suite
+on:
+  push:
+    branches: [ master, monetdbs ]
+  pull_request:
+
+jobs:
+  mtest:
+    runs-on: ubuntu-latest
+    env:
+      SRC_URL: "https://www.monetdb.org/downloads/sources/Aug2024/MonetDB-11.51.3.tar.xz"
+      SRC_SUM: "2f4499349e7917e12ec5d2d33d477bb50b4a302485cfcce1ca20129c7e791264"
+      TESTS_URL: "https://www.monetdb.org/downloads/sources/Aug2024/MonetDB-tests-11.51.3.tar.xz"
+      TESTS_SUM: "a770b6b8ece0d1f363356d41d358ce143593d5b54382134687e3d4dd9d58f821"
+      DEBIAN_FRONTEND: noninteractive
+      TZ: Etc/UTC
+    steps:
+
+      - name: Install packages
+        run: sudo apt-get -qq update && sudo apt-get -qq install -y tzdata python3 python3-venv curl xz-utils bison cmake gcc pkg-config ninja-build
+
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Which Python do we have today?
+        run: python3 --version
+
+      - name: Create venv with pymonetdb
+        run: python3 -m venv venv &&  ./venv/bin/pip install setuptools wheel cryptography lz4 && ./venv/bin/pip install .
+
+      - name: Download MonetDB sources
+        run: |
+          echo "SRC_URL=$SRC_URL"
+          echo "TEST_URL=$TEST_URL"
+          curl -s "$SRC_URL" -o monetdb.tar.xz
+          curl -s "$TESTS_URL" -o monetdb-tests.tar.xz
+          ( echo "$SRC_SUM" monetdb.tar.xz; echo "$TESTS_SUM" monetdb-tests.tar.xz ) | sha256sum -c
+          mkdir monetdb && cd monetdb && xzcat ../monetdb.tar.xz | tar xf - --strip-components=1 && xzcat ../monetdb-tests.tar.xz | tar xf - --strip-components=1
+
+      - name: Build MonetDB
+        run: . ./venv/bin/activate && cmake -GNinja -S monetdb -B BUILD --install-prefix="$PWD/INST" -DCMAKE_INSTALL_MESSAGE=NEVER && echo && cmake --build BUILD --target install
+
+      - name: Test MonetDB
+        run: PATH="$PWD/INST/bin:$PATH"; . ./venv/bin/activate && cd monetdb && time Mtest.py -v
+
+      - name: Store mtest output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtest-output
+          path: INST/mTests
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
+
+
+
+
+

@@ -10,25 +10,25 @@ all: test doc checks build
 build: wheel sdist
 
 venv/:
-	python3 -m venv venv
+	python -m venv venv
 	venv/bin/pip install --upgrade pip wheel
 
 venv/installed: venv/
-	venv/bin/pip install setuptools
+	venv/bin/pip install setuptools wheel
 	venv/bin/pip install -e ".[test,doc]"
 	touch venv/installed
 
 setup: venv/installed
 
 test: setup
-	venv/bin/pytest
+	venv/bin/pytest -v
 
 testwheel: wheel
 	rm -rf testvenv
 	python3 -m venv testvenv
 	./testvenv/bin/pip install dist/*.whl
 	./testvenv/bin/pip install pytest
-	cd tests && ../testvenv/bin/pytest
+	cd tests && ../testvenv/bin/pytest -v
 
 clean: venv/
 	venv/bin/python3 setup.py clean
@@ -61,7 +61,7 @@ upload: venv/bin/twine wheel sdist
 	venv/bin/twine upload dist/*.whl dist/*.tar.gz
 
 doc: setup
-	 PATH=$${PATH}:${CURDIR}/venv/bin $(MAKE) -C doc html SPHINXOPTS="-W"
+	 PATH="$$PWD/venv/bin:$$PATH" $(MAKE) -C doc html SPHINXOPTS="-W"
 
 venv/bin/flake8: setup
 	venv/bin/pip install flake8

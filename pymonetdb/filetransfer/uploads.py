@@ -127,6 +127,7 @@ class Upload:
                 server_wants_more = self._send_and_get_prompt(chunk)
                 if not server_wants_more:
                     self.cancelled = True
+                    assert self.mapi.uploader
                     self.mapi.uploader.cancel()
                     self.mapi = None
                     break
@@ -211,6 +212,8 @@ class NormalizeCrLf(BufferedIOBase):
         return True
 
     def write(self, data) -> int:
+        if not self.inner:
+            return 0
         if not data:
             return 0
 
@@ -238,13 +241,19 @@ class NormalizeCrLf(BufferedIOBase):
         return len(data)
 
     def flush(self):
+        if not self.inner:
+            return
         return self.inner.flush()
 
     def close(self):
+        if not self.inner:
+            return
         if self.pending:
             self.inner.write(b"\r")
             self.pending = False
-        return self.inner.close()
+        inner = self.inner
+        self.inner = None
+        return inner.close()
 
 
 class Uploader(ABC):
